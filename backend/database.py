@@ -1,132 +1,144 @@
-import sqlite3
-from pathlib import Path
+from google.cloud import firestore
 
 
-DATABASE_NAME = Path(__file__).resolve().parent / "schoolops.db"
+# Google Cloud / Firestore project
+PROJECT_ID = "schoolop"
+
+# Firestore client
+db = firestore.Client(project=PROJECT_ID)
 
 
-def get_connection():
-    return sqlite3.connect(DATABASE_NAME)
+# Firestore collection names
+EXAMS_COLLECTION = "exams"
+TEACHERS_COLLECTION = "teachers"
+AUDIT_LOGS_COLLECTION = "audit_logs"
 
 
-def initialize_database():
-    connection = get_connection()
-    cursor = connection.cursor()
-
-    # Exams table
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS exams (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            grade TEXT NOT NULL,
-            subject TEXT NOT NULL,
-            teacher TEXT NOT NULL,
-            room TEXT NOT NULL,
-            exam_time TEXT NOT NULL
-        )
-    """)
-
-    # Add sample exams only if table is empty
-    cursor.execute("SELECT COUNT(*) FROM exams")
-
-    if cursor.fetchone()[0] == 0:
-        exams = [
-            ("Grade 8", "English", "Ahmed", "Room 4", "09:00"),
-            ("Grade 8", "Mathematics", "Sara", "Room 2", "11:00"),
-            ("Grade 8", "Science", "Ali", "Room 3", "13:00"),
-        ]
-
-        cursor.executemany("""
-            INSERT INTO exams
-            (grade, subject, teacher, room, exam_time)
-            VALUES (?, ?, ?, ?, ?)
-        """, exams)
-
-    # Teachers table
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS teachers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL UNIQUE,
-            status TEXT NOT NULL,
-            available_times TEXT NOT NULL
-        )
-    """)
-
-    # Add sample teachers only if table is empty
-    cursor.execute("SELECT COUNT(*) FROM teachers")
-
-    if cursor.fetchone()[0] == 0:
-        teachers = [
-            ("Ahmed", "Absent", ""),
-            ("Sara", "Available", "09:00"),
-            ("Ali", "Available", "09:00"),
-            ("Fatima", "Available", "09:00,11:00"),
-        ]
-
-        cursor.executemany("""
-            INSERT INTO teachers
-            (name, status, available_times)
-            VALUES (?, ?, ?)
-        """, teachers)
-
-    # Audit logs table
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS audit_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            exam_id INTEGER NOT NULL,
-            action TEXT NOT NULL,
-            old_teacher TEXT,
-            new_teacher TEXT,
-            reason TEXT,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-
-    connection.commit()
-    connection.close()
-
+# ---------------------------------------------------------
+# EXAMS
+# ---------------------------------------------------------
 
 def get_exams():
-    connection = get_connection()
-    cursor = connection.cursor()
+    """Return all exams from Firestore."""
 
-    cursor.execute("""
-        SELECT id, grade, subject, teacher, room, exam_time
-        FROM exams
-    """)
+    docs = (
+        db.collection(EXAMS_COLLECTION)
+        .stream()
+    )
 
-    rows = cursor.fetchall()
-    connection.close()
+    exams = []
 
-    return [
-        {
-            "id": row[0],
-            "grade": row[1],
-            "subject": row[2],
-            "teacher": row[3],
-            "room": row[4],
-            "time": row[5],
-        }
-        for row in rows
-    ]
+    # Map Firestore document IDs to stable numeric IDs
+    # so the existing tools.py continues to work.
+    id_map = {
+        "grade8_english": 1,
+        "grade8_math": 2,
+        "grade8_science": 3,
+    }
+
+    for doc in docs:
+        data = doc.to_dict()
+
+        exams.append({
+            "id": id_map.get(doc.id, doc.id),
+            "grade": data.get("grade", ""),
+            "subject": data.get("subject", ""),
+            "teacher": data.get("teacher", ""),
+            "room": data.get("room", ""),
+            "time": data.get("time", ""),
+        })
+
+    return exams
 
 
 def update_exam_teacher(exam_id: int, teacher_name: str):
-    connection = get_connection()
-    cursor = connection.cursor()
+    """Update the teacher assigned to an exam in Firestore."""
 
-    cursor.execute("""
-        UPDATE exams
-        SET teacher = ?
-        WHERE id = ?
-    """, (teacher_name, exam_id))
+    id_map = {
+        1: "grade8_english",
+        2: "grade8_math",
+        3: "grade8_science",
+    }
 
-    updated = cursor.rowcount > 0
+    document_id = id_map.get(exam_id)
 
-    connection.commit()
-    connection.close()
+    if document_id is None:
+        return False
 
-    return updated
+    exam_ref = db.collection(EXAMS_COLLECTION).document(
+        document_id
+    )
 
+    snapshot = exam_ref.get()
+
+    if not snapshot.exists:
+        return False
+
+    exam_ref.update({
+        "teacher": teacher_name
+    })
+
+    return True
+
+
+# ---------------------------------------------------------
+# TEACHERS
+# ---------------------------------------------------------
+
+def get_teachers():
+    """Return teachers from Firestore."""
+
+    docs = (
+        db.collection(TEACHERS_COLLECTION)
+        .stream()
+    )
+
+    teachers = []
+
+    id_map = {
+        "ahmed": 1,
+        "sara": 2,
+        "ali": 3,
+        "fatima": 4,
+    }
+
+    for doc in docs:
+        data = doc.to_dict()
+
+        available_times = data.get(
+            "available_times",
+            []
+        )
+
+        # Handle Firestore string or array values safely
+        if isinstance(available_times, str):
+            available_times = (
+                [available_times]
+                if available_times.strip()
+                else []
+            )
+
+        # Clean whitespace/newlines
+        available_times = [
+            str(time).strip()
+            for time in available_times
+            if str(time).strip()
+        ]
+
+        teachers.append({
+            "id": id_map.get(doc.id, doc.id),
+            "name": data.get("name", ""),
+            "status": data.get(
+                "status",
+                "Unavailable"
+            ),
+            "available_times": available_times,
+        })
+
+    return teachers
+# ---------------------------------------------------------
+# AUDIT LOGS
+# ---------------------------------------------------------
 
 def log_action(
     exam_id: int,
@@ -135,90 +147,65 @@ def log_action(
     new_teacher: str,
     reason: str,
 ):
-    connection = get_connection()
-    cursor = connection.cursor()
+    """Write an audit log entry to Firestore."""
 
-    cursor.execute("""
-        INSERT INTO audit_logs
-        (exam_id, action, old_teacher, new_teacher, reason)
-        VALUES (?, ?, ?, ?, ?)
-    """, (
-        exam_id,
-        action,
-        old_teacher,
-        new_teacher,
-        reason
-    ))
-
-    connection.commit()
-    connection.close()
+    db.collection(AUDIT_LOGS_COLLECTION).add({
+        "exam_id": exam_id,
+        "action": action,
+        "old_teacher": old_teacher,
+        "new_teacher": new_teacher,
+        "reason": reason,
+        "created_at": firestore.SERVER_TIMESTAMP,
+    })
 
 
 def get_audit_logs():
-    connection = get_connection()
-    cursor = connection.cursor()
+    """Return audit logs from Firestore."""
 
-    cursor.execute("""
-        SELECT
-            id,
-            exam_id,
-            action,
-            old_teacher,
-            new_teacher,
-            reason,
-            created_at
-        FROM audit_logs
-        ORDER BY id DESC
-    """)
+    docs = (
+        db.collection(AUDIT_LOGS_COLLECTION)
+        .order_by(
+            "created_at",
+            direction=firestore.Query.DESCENDING
+        )
+        .stream()
+    )
 
-    rows = cursor.fetchall()
-    connection.close()
+    logs = []
 
-    return [
-        {
-            "id": row[0],
-            "exam_id": row[1],
-            "action": row[2],
-            "old_teacher": row[3],
-            "new_teacher": row[4],
-            "reason": row[5],
-            "created_at": row[6],
-        }
-        for row in rows
-    ]
+    counter = 1
+
+    for doc in docs:
+        data = doc.to_dict()
+
+        created_at = data.get("created_at")
+
+        logs.append({
+            "id": counter,
+            "exam_id": data.get("exam_id"),
+            "action": data.get("action"),
+            "old_teacher": data.get("old_teacher"),
+            "new_teacher": data.get("new_teacher"),
+            "reason": data.get("reason"),
+            "created_at": created_at,
+        })
+
+        counter += 1
+
+    return logs
 
 
-def get_teachers():
-    connection = get_connection()
-    cursor = connection.cursor()
-
-    cursor.execute("""
-        SELECT id, name, status, available_times
-        FROM teachers
-    """)
-
-    rows = cursor.fetchall()
-    connection.close()
-
-    return [
-        {
-            "id": row[0],
-            "name": row[1],
-            "status": row[2],
-            "available_times": (
-                row[3].split(",") if row[3] else []
-            ),
-        }
-        for row in rows
-    ]
+# ---------------------------------------------------------
+# DEVELOPMENT HELPER
+# ---------------------------------------------------------
 
 def clear_audit_logs():
-    """Clear audit logs during development/demo preparation."""
+    """Clear all audit logs during development/demo preparation."""
 
-    connection = get_connection()
-    cursor = connection.cursor()
+    docs = (
+        db.collection(AUDIT_LOGS_COLLECTION)
+        .stream()
+    )
 
-    cursor.execute("DELETE FROM audit_logs")
-
-    connection.commit()
-    connection.close()
+    for doc in docs:
+        doc.reference.delete()

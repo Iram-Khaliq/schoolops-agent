@@ -1,6 +1,11 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from google.adk.runners import Runner
+from google.adk.sessions import InMemorySessionService
+
+from .agent import root_agent
+
 from .database import (
     initialize_database,
     get_exams,
@@ -21,7 +26,13 @@ app = FastAPI(
     description="API for the SchoolOps autonomous school operations manager",
 )
 
+session_service = InMemorySessionService()
 
+runner = Runner(
+    agent=root_agent,
+    app_name="schoolops",
+    session_service=session_service,
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],

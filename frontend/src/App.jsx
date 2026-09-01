@@ -38,91 +38,77 @@ function App() {
     }
   };
 
-  const runAgent = async () => {
-    if (!request.trim()) {
-      setMessage("⚠️ Please enter an operational request.");
-      return;
-    }
+ const runAgent = async () => {
+  if (!request.trim()) {
+    setMessage("⚠️ Please enter an operational request.");
+    return;
+  }
 
-    setIsRunning(true);
-    setMessage("");
+  setIsRunning(true);
+  setMessage("");
 
-    setActivity([
-      "🔎 Inspecting exam schedule...",
-    ]);
+  // Show the actual workflow stages while the request is processing
+  setActivity([
+    "🔎 Inspecting exam schedule...",
+    "👩‍🏫 Checking teacher availability...",
+    "🔍 Checking scheduling conflicts...",
+    "🧠 Selecting the best replacement...",
+  ]);
 
-    try {
-      await new Promise((resolve) => setTimeout(resolve, 500));
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:8000/api/run-workflow?request=${encodeURIComponent(
+        request
+      )}`,
+      {
+        method: "POST",
+      }
+    );
 
-      setActivity((prev) => [
-        ...prev,
-        "👩‍🏫 Checking teacher availability...",
+    const data = await response.json();
+
+    if (data.success) {
+      const selectedTeacher = data.selected_teacher;
+      const candidateCount = data.candidates
+        ? data.candidates.length
+        : 0;
+
+      setActivity([
+        `🔎 Exam identified: ${data.exam.subject} — ${data.exam.time}`,
+        `👩‍🏫 Found ${candidateCount} available replacement candidates`,
+        "🔍 Checked scheduling conflicts",
+        `🧠 Selected ${selectedTeacher} based on availability and conflict checks`,
+        "💾 Updating exam database...",
+        "📋 Recording action in audit log...",
+        "✅ Database update verified successfully",
       ]);
 
-      await new Promise((resolve) => setTimeout(resolve, 500));
-
-      setActivity((prev) => [
-        ...prev,
-        "🔍 Checking scheduling conflicts...",
-      ]);
-
-      await new Promise((resolve) => setTimeout(resolve, 500));
-
-      setActivity((prev) => [
-        ...prev,
-        "🧠 Selecting the best replacement...",
-      ]);
-
-      const response = await fetch(
-        `http://127.0.0.1:8000/api/run-workflow?request=${encodeURIComponent(
-          request
-        )}`,
-        {
-          method: "POST",
-        }
+      setMessage(
+        `✅ Exam ${data.exam.id} updated successfully. New supervisor: ${selectedTeacher}.`
       );
 
-      const data = await response.json();
-
-      if (data.success) {
-        setActivity((prev) => [
-          ...prev,
-          "💾 Updating database...",
-        ]);
-
-        await new Promise((resolve) => setTimeout(resolve, 500));
-
-        setActivity((prev) => [
-          ...prev,
-          "✅ Verifying result...",
-        ]);
-
-        setMessage(
-          `✅ Exam ${data.exam.id} updated successfully. New supervisor: ${data.selected_teacher}.`
-        );
-
-        await loadData();
-      } else {
-        setMessage(`❌ ${data.message}`);
-
-        setActivity((prev) => [
-          ...prev,
-          `❌ ${data.message}`,
-        ]);
-      }
-    } catch (error) {
-      console.error("Workflow error:", error);
-
-      setMessage("❌ Could not connect to SchoolOps backend.");
-
+      await loadData();
+    } else {
       setActivity((prev) => [
         ...prev,
-        "❌ Backend connection failed.",
+        `❌ ${data.message}`,
       ]);
-    } finally {
-      setIsRunning(false);
+
+      setMessage(`❌ ${data.message}`);
     }
-  };
+  } catch (error) {
+    console.error("Workflow error:", error);
+
+    setMessage("❌ Could not connect to SchoolOps backend.");
+
+    setActivity((prev) => [
+      ...prev,
+      "❌ Backend connection failed.",
+    ]);
+  } finally {
+    setIsRunning(false);
+  }
+};
 
   return (
     <div className="app">
